@@ -1,0 +1,26 @@
+[package]
+name = "ncdu-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tim Koopmans"]
+license = "BSD-2-Clause"
+description = "Rust port of ncdu v2 — parallel disk usage analyzer with TUI"
+repository = "https://github.com/timkoopmans/ncdu-rs"
+readme = "README.md"
+keywords = ["disk-usage", "ncdu", "tui", "filesystem", "du"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+jwalk = "0.8"
+ratatui = "0.29"
+crossterm = "0.28"
+rustix = { version = "0.38", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
