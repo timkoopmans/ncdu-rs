@@ -1,5 +1,7 @@
 # ncdu-rs
 
+![100% Vibe Coded](https://img.shields.io/badge/100%25-vibe%20coded-ff69b4?style=for-the-badge)
+
 Rust port of [ncdu](https://dev.yorhel.nl/ncdu) v2 — parallel disk usage analyzer with a terminal UI.
 
 ## Goals
