@@ -1,3 +1,5 @@
+mod delete;
+mod exclude;
 mod json_export;
 mod json_import;
 mod model;
@@ -24,6 +26,10 @@ struct Cli {
     /// Write JSON export to this file instead of stdout. Use `-` for stdout.
     #[arg(short = 'o', long, default_value = "-")]
     output: String,
+
+    /// Exclude pattern (rsync/gitignore-like glob). Repeatable.
+    #[arg(long = "exclude", value_name = "PATTERN")]
+    exclude: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -39,8 +45,13 @@ fn main() -> ExitCode {
 
 #[cfg(unix)]
 fn run(cli: &Cli) -> anyhow::Result<()> {
+    let mut excl = exclude::ExcludeSet::new();
+    for p in &cli.exclude {
+        excl.add(p);
+    }
     let opts = scan::ScanOptions {
         extended: cli.extended,
+        exclude: excl,
     };
     let tree = scan::scan(&cli.path, &opts)?;
 

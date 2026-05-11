@@ -17,17 +17,23 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+use crate::exclude::{ExcludeSet, Patterns};
 use crate::model::{EType, Ext, Tree};
 use crate::sink::{MemSink, MemSinkDir, Stat};
 
 pub struct ScanOptions {
     /// Capture mtime/uid/gid/mode into `Ext` for every entry.
     pub extended: bool,
+    /// Exclude patterns. Pattern semantics documented in [`crate::exclude`].
+    pub exclude: ExcludeSet,
 }
 
 impl Default for ScanOptions {
     fn default() -> Self {
-        Self { extended: false }
+        Self {
+            extended: false,
+            exclude: ExcludeSet::new(),
+        }
     }
 }
 
@@ -45,12 +51,19 @@ pub fn scan(path: &Path, opts: &ScanOptions) -> io::Result<Tree> {
 
     let mut sink = MemSink::new();
     let mut root = sink.create_root(&name, &root_stat);
-    scan_dir(path, &mut sink, &mut root, opts);
+    let root_pat = opts.exclude.for_path(&name);
+    scan_dir(path, &mut sink, &mut root, opts, &root_pat);
     root.finalize(&mut sink, None);
     Ok(sink.into_tree())
 }
 
-fn scan_dir(path: &Path, sink: &mut MemSink, dir: &mut MemSinkDir, opts: &ScanOptions) {
+fn scan_dir(
+    path: &Path,
+    sink: &mut MemSink,
+    dir: &mut MemSinkDir,
+    opts: &ScanOptions,
+    pat: &Patterns,
+) {
     let entries = match fs::read_dir(path) {
         Ok(e) => e,
         Err(_) => {
@@ -76,6 +89,14 @@ fn scan_dir(path: &Path, sink: &mut MemSink, dir: &mut MemSinkDir, opts: &ScanOp
         };
         let child_path = entry.path();
 
+        // Pre-stat exclude check: pattern matching file-or-dir means we don't
+        // need to stat at all. Dir-only patterns are checked post-stat.
+        let pat_result = pat.matches(&opts.exclude, &name);
+        if pat_result == Some(false) {
+            dir.add_special(sink, &name, EType::Pattern);
+            continue;
+        }
+
         let metadata = match fs::symlink_metadata(&child_path) {
             Ok(m) => m,
             Err(_) => {
@@ -87,8 +108,13 @@ fn scan_dir(path: &Path, sink: &mut MemSink, dir: &mut MemSinkDir, opts: &ScanOp
         let stat = stat_from_metadata(&metadata, opts.extended);
 
         if metadata.file_type().is_dir() {
+            if pat_result == Some(true) {
+                dir.add_special(sink, &name, EType::Pattern);
+                continue;
+            }
             let mut sub = dir.add_dir(sink, &name, &stat);
-            scan_dir(&child_path, sink, &mut sub, opts);
+            let sub_pat = pat.enter(&opts.exclude, &name);
+            scan_dir(&child_path, sink, &mut sub, opts, &sub_pat);
             sub.finalize(sink, Some(dir));
         } else {
             dir.add_stat(sink, &name, &stat);
@@ -146,6 +172,38 @@ mod tests {
         let tree = scan(td.path(), &ScanOptions::default()).unwrap();
         let root = tree.get(tree.root);
         assert_eq!(root.as_dir().unwrap().items, 0);
+    }
+
+    #[test]
+    fn excludes_file_by_pattern() {
+        let td = tempdir().unwrap();
+        write_file(&td.path().join("keep"), b"k");
+        write_file(&td.path().join("drop"), b"d");
+
+        let mut excl = crate::exclude::ExcludeSet::new();
+        excl.add("drop");
+        let opts = ScanOptions {
+            extended: false,
+            exclude: excl,
+        };
+        let tree = scan(td.path(), &opts).unwrap();
+        let root = tree.get(tree.root);
+        let dir = root.as_dir().unwrap();
+        let mut names_and_types = Vec::new();
+        let mut cur = dir.sub;
+        while !cur.is_none() {
+            let n = tree.get(cur);
+            names_and_types.push((n.common.name.to_string(), n.common.etype));
+            cur = tree.get(cur).common.next;
+        }
+        names_and_types.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            names_and_types,
+            vec![
+                ("drop".to_string(), EType::Pattern),
+                ("keep".to_string(), EType::Reg),
+            ]
+        );
     }
 
     #[test]
@@ -236,7 +294,14 @@ mod tests {
     fn extended_attrs_populated_when_requested() {
         let td = tempdir().unwrap();
         write_file(&td.path().join("x"), b"hi");
-        let tree = scan(td.path(), &ScanOptions { extended: true }).unwrap();
+        let tree = scan(
+            td.path(),
+            &ScanOptions {
+                extended: true,
+                exclude: crate::exclude::ExcludeSet::new(),
+            },
+        )
+        .unwrap();
         let root = tree.get(tree.root);
         let child = tree.get(root.as_dir().unwrap().sub);
         let ext = child.common.ext.as_ref().expect("ext should be populated");

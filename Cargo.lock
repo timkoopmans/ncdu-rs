@@ -487,6 +487,7 @@ dependencies = [
  "clap",
  "crossterm",
  "jwalk",
+ "libc",
  "ratatui",
  "rustix 0.38.44",
  "serde",
