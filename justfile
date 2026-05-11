@@ -113,11 +113,13 @@ cdc-setup HOST="cdc-1" SCAN_PATH="$HOME":
     ssh -A {{HOST}} bash -s -- {{SCAN_PATH}} <<'REMOTE'
     set -euo pipefail
     SCAN_PATH="$1"
-    if ! command -v cargo >/dev/null 2>&1; then
+    if ! command -v rustup >/dev/null 2>&1; then
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --default-toolchain stable --profile minimal
     fi
     . "$HOME/.cargo/env"
+    # Ratatui + transitive deps need rustc >= 1.88; refresh stable.
+    rustup update stable
     cd "$HOME"
     if [ -d ncdu-rs/.git ]; then
         git -C ncdu-rs pull --ff-only
