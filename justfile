@@ -95,3 +95,56 @@ version: build
 # Sanity: build, test, lint, fmt-check
 ci: build test lint fmt-check
     @echo "ok"
+
+# Bootstrap + bench ncdu-rs on a cdc node. Per cluster-mutating-recipe rule,
+# requires CONFIRM=yes. Self-contained (no scripts/ dep). Idempotent.
+# Results land in ~/ncdu-rs/data/ on the node; pull with `just cdc-fetch`.
+# Usage:
+#   CONFIRM=yes just cdc-setup
+#   CONFIRM=yes just cdc-setup cdc-2 /tank/raw/hyperliquid/trades
+cdc-setup HOST="cdc-1" SCAN_PATH="$HOME":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "${CONFIRM:-}" != "yes" ]; then
+        echo "Refusing without CONFIRM=yes (cluster-mutating recipe)."
+        echo "Re-run: CONFIRM=yes just cdc-setup {{HOST}} {{SCAN_PATH}}"
+        exit 1
+    fi
+    ssh -A {{HOST}} bash -s -- {{SCAN_PATH}} <<'REMOTE'
+    set -euo pipefail
+    SCAN_PATH="$1"
+    if ! command -v cargo >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+    fi
+    . "$HOME/.cargo/env"
+    cd "$HOME"
+    if [ -d ncdu-rs/.git ]; then
+        git -C ncdu-rs pull --ff-only
+    else
+        git clone git@github.com:timkoopmans/ncdu-rs.git
+    fi
+    cd ncdu-rs
+    mkdir -p data
+    cargo build --release
+    BIN=./target/release/ncdu-rs
+    SAFE=$(echo "$SCAN_PATH" | tr / _ | sed 's,^_,,')
+    /usr/bin/time -f '%e s wall, %M KB peak rss' \
+        "$BIN" -t 1 -o "data/${SAFE}.seq.json" "$SCAN_PATH" \
+        2> "data/${SAFE}.seq.time"
+    /usr/bin/time -f '%e s wall, %M KB peak rss' \
+        "$BIN" -t 8 -o "data/${SAFE}.par.json" "$SCAN_PATH" \
+        2> "data/${SAFE}.par.time"
+    echo "--- seq:" ; cat "data/${SAFE}.seq.time"
+    echo "--- par:" ; cat "data/${SAFE}.par.time"
+    if stat -f -c %T "$SCAN_PATH" 2>/dev/null | grep -qi xfs \
+        && sudo -n true 2>/dev/null
+    then
+        sudo "$BIN" --xfs-quota "$SCAN_PATH" | tee "data/${SAFE}.xfs.txt"
+    fi
+    REMOTE
+
+# Pull benchmark results from a cdc node into local ./data/ for inspection.
+cdc-fetch HOST="cdc-1":
+    mkdir -p data
+    rsync -avz --progress {{HOST}}:~/ncdu-rs/data/ ./data/
